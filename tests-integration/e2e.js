@@ -61,6 +61,15 @@ const login = async (phone, password) => (await call("POST", "/auth/login", null
   ok(reg.status === 201, "customer registers", reg.body);
   const custT = reg.body.accessToken;
 
+  // ---------- login rate limit: only failures count, per account ----------
+  const victim = `0801${run}77`.slice(0, 11);
+  const limitCodes = [];
+  for (let i = 0; i < 11; i++) limitCodes.push((await call("POST", "/auth/login", null, { phone: victim, password: "wrong-password" })).status);
+  ok(limitCodes.slice(0, 10).every((c) => c === 401) && limitCodes[10] === 429, "11th wrong password for one account is blocked (429)", limitCodes);
+  for (let i = 0; i < 25; i++) await login(mgr.phone, pw);
+  ok((await call("POST", "/auth/login", null, { phone: mgr.phone, password: pw })).status === 200, "25 successful logins from one address never get blocked");
+  ok((await call("POST", "/auth/login", null, { phone: cashier.phone, password: pw })).status === 200, "other accounts are unaffected by one account's lockout");
+
   // ---------- permissions ----------
   ok((await call("POST", "/branches", custT, { name: "x", code: "XX", address: "y" })).status === 403, "customer cannot create branches");
   ok((await call("POST", "/users", mgrT, { name: "n", phone: "08099999999", password: pw, role: "super_admin" })).status === 403, "manager cannot create a super admin");
@@ -142,6 +151,10 @@ const login = async (phone, password) => (await call("POST", "/auth/login", null
   const close = await call("POST", "/shifts/close", cashT, { declared: { cash: 7080, transfer: 860, pos_terminal: 0 } });
   ok(close.status === 200 && close.body.shift.variance.cash === -500 && close.body.shift.hasVariance === true, "closing records a -500 cash variance", close.body.shift);
   ok((await call("POST", "/shifts/close", cashT, { declared: {} })).status === 409, "cannot close twice");
+  const sd = await call("GET", `/shifts/${close.body.shift._id}`, mgrT);
+  ok(sd.status === 200 && sd.body.orders?.length >= 2 && sd.body.shift.cashier?.name, "branch manager can open a shift's details (with its payments)", sd.body.message);
+  ok((await call("GET", `/shifts/${close.body.shift._id}`, cashT)).status === 200, "the cashier can open their own shift's details");
+  ok((await call("GET", `/shifts/${close.body.shift._id}`, custT)).status === 403, "a customer cannot open shift details");
   ok((await call("PATCH", `/shifts/${close.body.shift._id}/review`, mgrT, { note: "Short by 500, warned" })).status === 200, "manager reviews the shift");
 
   // ---------- pay on delivery + rider cash ----------
@@ -154,11 +167,18 @@ const login = async (phone, password) => (await call("POST", "/auth/login", null
   ok((await st(podId, ridT, "delivered", { cashCollected: podTotal - 1 })).status === 400, "cash collected must cover the total");
   const dl = await st(podId, ridT, "delivered", { cashCollected: podTotal });
   ok(dl.status === 200 && dl.body.order.payment.status === "paid", "delivered, cash recorded and order marked paid", dl.body);
+  const mine0 = await call("GET", "/riders/me/cash", ridT);
+  ok(mine0.status === 200 && mine0.body.expected === podTotal && mine0.body.count === 1, "rider sees their own outstanding cash", mine0.body);
+  ok((await call("GET", "/riders/me/cash", mgrT)).status === 403, "a manager is not a rider (403 on /riders/me/cash)");
+  const sum0 = await call("GET", "/riders/cash", mgrT);
+  ok(sum0.body.totalOwed === podTotal && sum0.body.riders[0]?.rider?.name && sum0.body.riders[0].count === 1, "manager sees who owes cash across the branch", sum0.body);
   const owed = await call("GET", `/riders/${riderId}/cash`, mgrT);
   ok(owed.body.expected === podTotal, "manager sees rider owes the order total", owed.body);
   const rem = await call("POST", `/riders/${riderId}/remit`, mgrT, { amountReceived: podTotal - 100 });
   ok(rem.status === 201 && rem.body.remittance.variance === -100, "remittance records a -100 shortage", rem.body);
   ok((await call("POST", `/riders/${riderId}/remit`, mgrT, { amountReceived: 1 })).status === 409, "nothing left to remit");
+  ok((await call("GET", "/riders/remittances", mgrT)).body.remittances?.[0]?.variance === -100, "manager sees the remittance history with the shortage");
+  ok((await call("GET", "/riders/remittances", custT)).status === 403, "customers cannot see remittances");
 
   // ---------- cancel + refund ----------
   const c1 = await call("POST", "/orders", custT, { ...body, price: undefined, payment: { method: "pay_on_delivery" }, items: [{ menuItem: zobo._id, quantity: 1 }] });

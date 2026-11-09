@@ -83,8 +83,10 @@ exports.list = asyncHandler(async (req, res) => {
 
 exports.get = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw new AppError("Shift not found", 404);
-  const shift = await Shift.findById(req.params.id).populate("cashier", "name workerType").populate("branch", "name code");
+  // Check access on the raw ids first: once cashier/branch are expanded into objects the comparison would never match
+  const shift = await Shift.findById(req.params.id);
   if (!shift || !canAccess(req.user, shift)) throw new AppError("Shift not found", 404);
+  await shift.populate([{ path: "cashier", select: "name workerType" }, { path: "branch", select: "name code" }]);
   const orders = await Order.find({ shift: shift._id }).select("orderNumber type total payment.method payment.status createdAt").sort("createdAt");
   res.json({ shift, orders, live: shift.status === "open" ? await liveFigures(shift) : undefined });
 });

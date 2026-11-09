@@ -61,6 +61,9 @@ router.post("/orders/:id/payment", protect, authorize(...STAFF), orders.recordPa
 router.get("/riders/available", protect, authorize(...STAFF), riders.available);
 router.patch("/riders/me/status", protect, authorize("rider"), riders.setStatus);
 
+router.get("/riders/me/cash", protect, authorize("rider"), riders.myCash);
+router.get("/riders/cash", protect, authorize(ADMIN, MGR), riders.cashSummary);
+router.get("/riders/remittances", protect, authorize(ADMIN, MGR), riders.remittances);
 router.get("/riders/:id/cash", protect, authorize(ADMIN, MGR), riders.cashOutstanding);
 router.post("/riders/:id/remit", protect, authorize(ADMIN, MGR), riders.remit);
 

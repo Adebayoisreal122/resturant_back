@@ -73,3 +73,37 @@ exports.remit = asyncHandler(async (req, res) => {
   }
   res.status(201).json({ remittance });
 });
+
+// A rider's own view: what they still owe the branch
+exports.myCash = asyncHandler(async (req, res) => {
+  const orders = await outstandingFor(req.user._id);
+  res.json({ count: orders.length, expected: Math.round(orders.reduce((s, o) => s + o.total, 0) * 100) / 100, orders });
+});
+
+// Manager/admin: every rider in the branch who still owes cash, biggest first
+exports.cashSummary = asyncHandler(async (req, res) => {
+  const branch = req.user.role === "super_admin" ? req.query.branch : req.user.branch;
+  const match = { status: "delivered", "payment.method": "pay_on_delivery", "payment.status": "paid", "delivery.cashRemitted": { $ne: true } };
+  if (branch) {
+    if (!mongoose.isValidObjectId(branch)) throw new AppError("Invalid branch");
+    match.branch = new mongoose.Types.ObjectId(String(branch)); // aggregate() does not auto-cast
+  }
+  const rows = await Order.aggregate([
+    { $match: match },
+    { $group: { _id: "$delivery.rider", count: { $sum: 1 }, expected: { $sum: "$total" }, since: { $min: "$createdAt" } } },
+    { $sort: { expected: -1 } },
+  ]);
+  const people = await User.find({ _id: { $in: rows.map((r) => r._id) } }).select("name phone").lean();
+  const byId = new Map(people.map((p) => [String(p._id), p]));
+  res.json({
+    totalOwed: Math.round(rows.reduce((s, r) => s + r.expected, 0) * 100) / 100,
+    riders: rows.map((r) => ({ rider: byId.get(String(r._id)) || { _id: r._id }, count: r.count, expected: r.expected, since: r.since })),
+  });
+});
+
+// Recent handovers, so shortages are visible
+exports.remittances = asyncHandler(async (req, res) => {
+  const filter = req.user.role === "super_admin" ? (req.query.branch ? { branch: req.query.branch } : {}) : { branch: req.user.branch };
+  const list = await RiderRemittance.find(filter).sort("-createdAt").limit(50).populate("rider", "name").populate("receivedBy", "name");
+  res.json({ remittances: list });
+});
